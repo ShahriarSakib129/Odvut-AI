@@ -1,0 +1,74 @@
+# ---------------------------------------------------------------------------
+# Render Blueprint for INFO GROUP AI BOT
+# ---------------------------------------------------------------------------
+#  Usage (optional - you can also configure everything by hand):
+#    1. push this project to GitHub
+#    2. Render dashboard -> New -> Blueprint -> pick the repository
+#    3. Render creates the web service and asks for the secret values below
+#
+#  IMPORTANT: this is a *web* service (webhook mode), not a background worker.
+#  Render's free tier cannot run a 24/7 background worker, but a free web
+#  service can stay awake 24/7 if UptimeRobot pings /health every 5 minutes.
+# ---------------------------------------------------------------------------
+services:
+  - type: web
+    name: info-group-ai-bot
+    runtime: python
+    plan: free
+    region: singapore
+    branch: main
+    buildCommand: pip install --upgrade pip && pip install -r requirements.txt
+    startCommand: gunicorn --bind 0.0.0.0:$PORT --workers 1 --threads 4 --timeout 120 --access-logfile - --error-logfile - app:app
+    healthCheckPath: /health
+    autoDeploy: true
+    envVars:
+      - key: PYTHON_VERSION
+        value: 3.11.9
+
+      # ---- secrets: fill these in the Render dashboard -------------------
+      - key: BOT_TOKEN
+        sync: false
+      - key: GROQ_API_KEY
+        sync: false
+      - key: DATABASE_URL
+        sync: false
+      - key: WEBHOOK_SECRET
+        generateValue: true
+      - key: PUBLIC_URL
+        sync: false
+      - key: ADMIN_ID
+        sync: false
+      - key: TARGET_ADMIN_ID
+        sync: false
+      - key: GROUP_ID
+        sync: false
+
+      # ---- non-secret defaults ------------------------------------------
+      - key: GROQ_MODEL
+        value: openai/gpt-oss-120b
+      - key: SET_WEBHOOK_ON_STARTUP
+        value: "true"
+      - key: WEBHOOK_REQUIRE_SECRET
+        value: "true"
+      - key: DROP_PENDING_UPDATES
+        value: "true"
+      - key: LOG_LEVEL
+        value: INFO
+      - key: ENVIRONMENT
+        value: production
+      - key: TRIGGER_ON_MENTION
+        value: "true"
+      - key: TRIGGER_ON_REPLY
+        value: "true"
+      - key: MAX_MEMORY_RESULTS
+        value: "10"
+      - key: MAX_QA_RESULTS
+        value: "5"
+      - key: MAX_CONTEXT_CHARS
+        value: "12000"
+      - key: CACHE_ENABLED
+        value: "true"
+      - key: EMBEDDING_ENABLED
+        value: "true"
+      - key: DB_POOL_MAX
+        value: "4"

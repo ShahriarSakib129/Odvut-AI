@@ -1,0 +1,9 @@
+# INFO GROUP AI BOT - production dependencies
+# Pinned to versions that were verified together (Python 3.11 - 3.13).
+
+python-telegram-bot==22.5   # Telegram Bot API, async, v20+ handler framework
+Flask==3.1.2                # webhook receiver + /health endpoint
+gunicorn==23.0.0            # production WSGI server (Render start command)
+psycopg2-binary==2.9.11     # PostgreSQL driver for Supabase
+requests==2.32.5            # Groq API client (OpenAI compatible)
+python-dotenv==1.1.1        # .env support for local development
