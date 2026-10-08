@@ -361,6 +361,12 @@ https://আপনার-service.onrender.com/diagnose?token=আপনার_WEBH
 
 > 🔐 `/diagnose` আপনার `WEBHOOK_SECRET` ছাড়া চলে না এবং কোনো token/key কখনো উত্তরে দেয় না।
 
+**কম্পিউটারে Python থাকলে — এক কমান্ডেই পুরো রিপোর্ট:**
+```bash
+python scripts/set_webhook.py --info      # সব চেক বাংলা সমাধানসহ
+python scripts/set_webhook.py --info --json   # কাঁচা JSON দরকার হলে
+```
+
 **শুধু browser দিয়ে দ্রুত চেক (কিছু deploy না করেই):**
 
 1. **আসল Render URL বের করুন:** Render ড্যাশবোর্ড → আপনার service → উপরে দেখানো URL (যেমন `https://info-group-ai-bot-a1b2.onrender.com`) কপি করুন।

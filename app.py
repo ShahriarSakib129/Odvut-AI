@@ -154,7 +154,8 @@ def create_app(settings: Settings | None = None, *, bootstrap: bool = True) -> F
         """
         if not _authorized(request, settings):
             logger.warning("unauthorized /set_webhook attempt from %s", request.remote_addr)
-            return jsonify({"ok": False, "error": "unauthorized"}), 403
+            return jsonify({"ok": False, "error": "unauthorized",
+                            "reason": _auth_failure_reason(request, settings)}), 403
         if not settings.webhook_url:
             return jsonify({"ok": False,
                             "error": "PUBLIC_URL is not set"}), 400
@@ -273,6 +274,20 @@ def create_app(settings: Settings | None = None, *, bootstrap: bool = True) -> F
 # --------------------------------------------------------------------------- #
 # helpers
 # --------------------------------------------------------------------------- #
+def _auth_failure_reason(request_obj: Any, settings: Settings) -> str:
+    """Explain a failed secret check WITHOUT revealing the secret itself."""
+    server = settings.webhook_secret or ""
+    if not server:
+        return ("WEBHOOK_SECRET is EMPTY on the server: the Render Environment variable "
+                "is missing, misspelled, or the service has not redeployed yet.")
+    submitted = request_obj.args.get("token", "")
+    if not submitted:
+        return "no token in the URL: add ?token=<WEBHOOK_SECRET> at the end."
+    return (f"token length {len(submitted)} does not match the server secret length "
+            f"{len(server)}: the value in the URL differs from Render's WEBHOOK_SECRET "
+            "(check for extra spaces, a wrong copy, or an old value).")
+
+
 def _authorized(request_obj: Any, settings: Settings) -> bool:
     """Validate the Telegram webhook secret token."""
     if not settings.webhook_secret:

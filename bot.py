@@ -32,7 +32,7 @@ from telegram.error import TelegramError
 from telegram.ext import Application
 
 from config import Settings, get_settings
-from bot_telegram.handlers import ALLOWED_UPDATES, build_application
+from bot_telegram.handlers import ALLOWED_UPDATES, _post_init, build_application
 from utils.logger import configure_logging, get_logger, redact, register_secrets
 
 logger = get_logger(__name__)
@@ -173,6 +173,16 @@ class ApplicationManager:
             self._app = application
             loop.run_until_complete(application.initialize())
             loop.run_until_complete(application.start())
+            # PTB's initialize()/start() do NOT run post_init (only run_webhook /
+            # run_polling do). Without this call the automatic webhook registration
+            # and command menu setup never happen in webhook mode, so the Telegram
+            # webhook stays empty and updates pile up unanswered.
+            if self.mode == "webhook":
+                try:
+                    loop.run_until_complete(_post_init(application))
+                except Exception as exc:  # never let a webhook/setup hiccup kill the bot
+                    logger.error("post-init (webhook registration) failed: %s",
+                                 redact(str(exc))[:200])
             if self.mode == "polling":
                 loop.run_until_complete(
                     application.updater.start_polling(
