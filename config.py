@@ -167,6 +167,33 @@ def is_placeholder(value: str) -> bool:
 # --------------------------------------------------------------------------- #
 # database url handling
 # --------------------------------------------------------------------------- #
+def _normalize_public_url(public_url: str, webhook_path: str,
+                          warnings: list[str]) -> str:
+    """Return the bare service URL.
+
+    People naturally paste the *full* webhook URL into ``PUBLIC_URL`` (e.g.
+    ``https://app.onrender.com/webhook``).  The bot appends ``WEBHOOK_PATH``
+    itself, which would produce ``.../webhook/webhook`` -- every Telegram update
+    would then hit a 404 and the bot would look "silent".  Strip it silently and
+    warn, so the deployment works even with the most common copy/paste mistake.
+    """
+    value = (public_url or "").strip().rstrip("/")
+    if not value:
+        return ""
+    path = "/" + (webhook_path or "/webhook").strip("/")
+    lowered = value.lower()
+    for suffix in ("/telegram/webhook", path):   # longest suffix first
+        if suffix and lowered.endswith(suffix.lower()):
+            value = value[: -len(suffix)].rstrip("/")
+            warnings.append(
+                f"PUBLIC_URL ended with '{suffix}' -- it was trimmed to '{value}'. "
+                "PUBLIC_URL must be the bare service URL; the webhook path is added "
+                "automatically."
+            )
+            break
+    return value
+
+
 def normalize_database_url(url: str, *, force_ssl: bool = True) -> tuple[str, list[str]]:
     """Return ``(normalized_url, warnings)``.
 
@@ -452,7 +479,8 @@ def load_settings(env: Mapping[str, str] | None = None, *, strict: bool = False)
             "commands, TARGET_ADMIN_ID controls whose messages become memory."
         )
 
-    public_url = env_str(env, "PUBLIC_URL").rstrip("/")
+    public_url = _normalize_public_url(env_str(env, "PUBLIC_URL"),
+                                       env_str(env, "WEBHOOK_PATH", "/webhook"), warnings)
     if public_url and not public_url.startswith(("http://", "https://")):
         problems.append("PUBLIC_URL must start with http:// or https:// (Render URL)")
     if public_url and public_url.startswith("http://") and env_str(env, "ENVIRONMENT", "production") == "production":

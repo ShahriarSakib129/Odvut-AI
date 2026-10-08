@@ -21,10 +21,15 @@ services:
     startCommand: gunicorn --bind 0.0.0.0:$PORT --workers 1 --threads 4 --timeout 120 --access-logfile - --error-logfile - app:app
     healthCheckPath: /health
     autoDeploy: true
+    # Python version: Render reads the `.python-version` file in the repo root
+    # (it ignores runtime.txt). `.python-version` contains "3.11", so Render
+    # resolves the newest 3.11.x patch automatically. If you prefer to pin the
+    # patch version here instead, uncomment (PYTHON_VERSION must be fully
+    # qualified, e.g. 3.11.9):
+    # envVars:
+    #   - key: PYTHON_VERSION
+    #     value: 3.11.9
     envVars:
-      - key: PYTHON_VERSION
-        value: 3.11.9
-
       # ---- secrets: fill these in the Render dashboard -------------------
       - key: BOT_TOKEN
         sync: false

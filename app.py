@@ -63,6 +63,9 @@ def create_app(settings: Settings | None = None, *, bootstrap: bool = True) -> F
     register_secrets(settings.secret_map().values())
 
     app = Flask(__name__)
+    # "/set_webhook/" and "/health/" must not 404 just because of a trailing
+    # slash -- beginners copy URLs by hand, so be forgiving here.
+    app.url_map.strict_slashes = False
     app.config["SETTINGS"] = settings
     app.config["JSON_SORT_KEYS"] = False
     app.url_map.strict_slashes = False
@@ -85,7 +88,9 @@ def create_app(settings: Settings | None = None, *, bootstrap: bool = True) -> F
             "version": VERSION,
             "model": settings.groq_model,
             "webhook_path": settings.webhook_path,
-            "docs": "See README.md for setup instructions.",
+            "expected_webhook_url": settings.webhook_url or None,
+            "diagnose": "GET /diagnose?token=<WEBHOOK_SECRET>",
+            "docs": "See README.md or DEPLOY_A_TO_Z.md for setup instructions.",
         })
 
     @app.get("/health")
@@ -139,6 +144,8 @@ def create_app(settings: Settings | None = None, *, bootstrap: bool = True) -> F
         })
 
     @app.get("/set_webhook")
+    @app.get("/set-webhook")
+    @app.get("/setwebhook")
     def set_webhook():
         """Convenience endpoint for initial setup / webhook repair.
 
@@ -153,6 +160,25 @@ def create_app(settings: Settings | None = None, *, bootstrap: bool = True) -> F
                             "error": "PUBLIC_URL is not set"}), 400
         result = _manager().set_webhook(delete_first=_truthy(request.args.get("delete_first")))
         return jsonify(result), (200 if result.get("ok") else 502)
+
+    @app.get("/diagnose")
+    @app.get("/doctor")
+    def diagnose():
+        """One-link self check: why is the bot not answering?
+
+        ``/diagnose?token=<WEBHOOK_SECRET>`` inspects the running service and
+        Telegram itself (webhook URL, last error, privacy mode, group membership,
+        database) and returns a report with Bengali fix hints. Secrets are never
+        included in the response.
+        """
+        if not _authorized(request, settings):
+            logger.warning("unauthorized /diagnose attempt from %s", request.remote_addr)
+            return jsonify({"ok": False, "error": "unauthorized"}), 403
+        import diagnostics
+        report = diagnostics.run_diagnostics(settings, manager=_manager(), database=database)
+        logger.info("diagnose: verdict=%s failed=%s", report["verdict"],
+                    [c["id"] for c in report["checks"] if c["status"] == "fail"])
+        return jsonify(report), 200
 
     @app.route(settings.webhook_path, methods=["POST"])
     @app.route("/telegram/webhook", methods=["POST"])
@@ -197,11 +223,32 @@ def create_app(settings: Settings | None = None, *, bootstrap: bool = True) -> F
     # ------------------------------------------------------------------ #
     @app.errorhandler(404)
     def not_found(_error):
-        return jsonify({"ok": False, "error": "not found"}), 404
+        logger.warning("404 on %s (endpoint does not exist)", request.path)
+        return jsonify({
+            "ok": False,
+            "error": "not found",
+            "path": request.path,
+            "hint": ("This service only answers on the paths below. To find out why the "
+                     "bot is silent open GET /diagnose?token=<WEBHOOK_SECRET>; to "
+                     "(re)register the Telegram webhook open "
+                     "GET /set_webhook?token=<WEBHOOK_SECRET>"),
+            "endpoints": [
+                "GET  /",
+                "GET  /health",
+                "GET  /version",
+                "GET  /diagnose?token=<WEBHOOK_SECRET>   (why is the bot silent?)",
+                "GET  /set_webhook?token=<WEBHOOK_SECRET>",
+                "POST /webhook          (Telegram only, needs the secret header)",
+            ],
+        }), 404
 
     @app.errorhandler(405)
     def method_not_allowed(_error):
-        return jsonify({"ok": False, "error": "method not allowed"}), 405
+        hint = None
+        if request.path.rstrip("/") == settings.webhook_path.rstrip("/"):
+            hint = ("/webhook only accepts POST from Telegram. To REGISTER the webhook "
+                    "open GET /set_webhook?token=<WEBHOOK_SECRET> in your browser.")
+        return jsonify({"ok": False, "error": "method not allowed", "hint": hint}), 405
 
     @app.errorhandler(500)
     def server_error(error):  # pragma: no cover - defensive

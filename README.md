@@ -120,8 +120,10 @@ info-group-ai-bot/
 ├── requirements-dev.txt        # + pytest
 ├── Procfile                    # Render/Heroku start command
 ├── render.yaml                 # Render Blueprint (optional)
-├── runtime.txt                 # python-3.11.9
+├── .python-version             # "3.11" -> Render এই ফাইল পড়ে Python version ঠিক করে
+├── runtime.txt                 # python-3.11.9 (পুরোনো Heroku-style pin, ক্ষতি নেই)
 ├── pytest.ini
+├── DEPLOY_A_TO_Z.md            # ⭐ ZIP → GitHub → Render পুরো গাইড (শুরু এখান থেকে)
 ├── .env.example                # ← এখান থেকে কপি করে .env বানাবেন
 ├── .gitignore
 ├── LICENSE
@@ -132,6 +134,10 @@ info-group-ai-bot/
 > PyPI-এর `python-telegram-bot` প্যাকেজটি `import telegram` নামে import হয়। যদি আমাদের নিজের ফোল্ডারের নামও `telegram` হতো, তাহলে সেটি আসল লাইব্রেরিকে shadow করে ফেলত এবং `from telegram.ext import Application` ব্যর্থ হতো। এজন্য নিজের প্যাকেজের নাম `bot_telegram/` রাখা হয়েছে।
 
 ---
+
+> ## ⭐ প্রথমবার deploy করছেন?
+> একেবারে শুরু থেকে (ZIP → GitHub → Render → UptimeRobot) হুবহু ক্লিক-বাই-ক্লিক গাইড:
+> **[`DEPLOY_A_TO_Z.md`](DEPLOY_A_TO_Z.md)** — কোন ফাইল GitHub-এ যাবে আর কোনটা যাবে না, তার টেবিলসহ।
 
 ## 🚀 ধাপে ধাপে Setup (Beginner friendly)
 
@@ -205,7 +211,8 @@ pip install -r requirements.txt
 1. [supabase.com](https://supabase.com) → **New project** (free)। Region এমনভাবে বাছুন যেটি আপনার/আপনার গ্রুপের কাছাকাছি (যেমন Singapore)
 2. Project তৈরি হওয়ার পর: **Project Settings → Database → Connection string → URI**
 3. Password দেখতে **Reset database password** চাপুন (নতুন password কপি করে রাখুন)
-4. URI-টি কপি করুন। Free tier-এ **Connection pooling → Session** ব্যবহার করুন:
+4. **Connect** বাটন → **Session pooler** ট্যাব → URI কপি করুন।
+   ⚠️ **"Direct connection" URI ব্যবহার করবেন না** — সেটি এখন IPv6-only, আর Render IPv4-only, তাই `Network is unreachable` error আসবে। Session pooler সব plan-এ IPv4-এ কাজ করে:
    ```
    postgresql://postgres.abcdefghijklm:[YOUR-PASSWORD]@aws-0-ap-southeast-1.pooler.supabase.com:5432/postgres
    ```
@@ -376,7 +383,7 @@ Render Dashboard → আপনার service → **Environment** → নিচ�
 | `TARGET_ADMIN_ID` | — | কার message memory হবে (comma-separated একাধিকও চলে) |
 | `ADMIN_ID` | — | কে admin command চালাতে পারবে |
 | `GROUP_ID` | — | নির্দিষ্ট গ্রুপ (খালি রাখলে যেকোনো গ্রুপ) |
-| `PUBLIC_URL` | — | Render URL (webhook auto-setup-এর জন্য) |
+| `PUBLIC_URL` | — | Render-এর **base** URL, শেষে `/webhook` নয় (যেমন `https://x.onrender.com`) |
 | `WEBHOOK_SECRET` | — | webhook protect করার secret |
 | `MAX_MEMORY_RESULTS` | `10` | সর্বোচ্চ কতটি admin memory prompt-এ যাবে |
 | `MAX_QA_RESULTS` | `5` | সর্বোচ্চ কতটি Q&A pair prompt-এ যাবে |
@@ -407,6 +414,7 @@ python scripts/check_config.py --online   # Groq + Telegram API সহ
 | `python scripts/apply_schema.py` | `database/schema.sql` চালানো (idempotent — বারবার চালানো নিরাপদ) |
 | `python scripts/check_config.py [--online]` | `.env`, DB, Groq, Telegram সব যাচাই |
 | `python scripts/set_webhook.py --set` | Telegram-এ webhook সেট/আপডেট (`--info`, `--delete` ও আছে) |
+| `GET /diagnose?token=<WEBHOOK_SECRET>` | 🩺 এক লিংকে সমস্যা নির্ণয়: webhook URL মিলছে কি, privacy mode, DB, group membership |
 | `python scripts/set_commands.py` | `/start`, `/help` ... কমান্ড মেনু Telegram-এ রেজিস্টার |
 | `python scripts/simulate_conversation.py [-v]` | ইন্টারনেট ছাড়াই পুরো pipeline ডেমো (DB/TG লাগে না) |
 | `python scripts/seed_demo_memory.py --clear-first` | টেস্টের জন্য demo memory ঢোকায় ⚠️ শুধু টেস্ট ডেটাবেজে |
