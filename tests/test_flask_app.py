@@ -363,36 +363,50 @@ class TestDiagnoseEndpoint:
 
 
 class TestWebhookAutoRegistration:
-    """Regression: PTB's initialize()/start() never run post_init, so the webhook
-    used to stay empty on Render. The bot must now register it itself on start."""
+    """Webhook registration must run in the background and never block startup.
 
-    def test_post_init_is_invoked_in_webhook_mode(self, monkeypatch):
+    Regression: running it inline before ``_started = True`` kept the bot in
+    "starting" whenever a Telegram call hung, so every update got a 503.
+    """
+
+    def test_setup_does_not_block_when_telegram_hangs(self, monkeypatch):
+        import asyncio
+        import time
+        import bot as bot_module
+
+        async def hanging_post_init(application):
+            await asyncio.sleep(3600)
+
+        monkeypatch.setattr(bot_module, "_post_init", hanging_post_init)
+        loop = asyncio.new_event_loop()
+        try:
+            started = time.time()
+            bot_module.schedule_webhook_setup(loop, object())
+            assert time.time() - started < 1.0, "startup was blocked by webhook setup"
+            loop.run_until_complete(asyncio.sleep(0.05))   # let the task begin
+            tasks = [t for t in asyncio.all_tasks(loop) if not t.done()]
+            assert tasks, "webhook setup task was not scheduled"
+            for task in tasks:
+                task.cancel()
+            loop.run_until_complete(asyncio.gather(*tasks, return_exceptions=True))
+        finally:
+            loop.close()
+
+    def test_setup_failure_is_logged_not_raised(self, monkeypatch):
         import asyncio
         import bot as bot_module
 
-        calls = []
+        async def failing_post_init(application):
+            raise RuntimeError("telegram unreachable")
 
-        async def fake_post_init(application):
-            calls.append(application)
+        monkeypatch.setattr(bot_module, "_post_init", failing_post_init)
+        loop = asyncio.new_event_loop()
+        try:
+            bot_module.schedule_webhook_setup(loop, object())
+            loop.run_until_complete(asyncio.sleep(0.05))   # must not raise
+        finally:
+            loop.close()
 
-        class FakeApp:
-            async def initialize(self): pass
-            async def start(self): pass
-
-        monkeypatch.setattr(bot_module, "_post_init", fake_post_init)
-        monkeypatch.setattr(bot_module, "build_application",
-                            lambda settings, for_webhook: (FakeApp(), None))
-        manager = bot_module.ApplicationManager.__new__(bot_module.ApplicationManager)
-        manager.mode = "webhook"
-        manager.settings = None
-        manager._loop = None
-        manager._app = None
-        manager._started = False
-        manager._start_error = None
-        manager._stop_event = None
-        manager.settings = bot_module.get_settings()
-        manager._run_loop()
-        assert len(calls) == 1, "post_init (webhook registration) was not run"
 
 
 class TestAuthFailureReason:
