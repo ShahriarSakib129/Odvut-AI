@@ -98,7 +98,8 @@ when Groq is unreachable — the bot quotes stored memory instead of failing.
 | Symptom | Fix |
 |---|---|
 | Service sleeps, first request slow | add the UptimeRobot monitor (5 min) |
-| `Build failed` | check `requirements.txt` install logs; `runtime.txt` needs a supported version (`python-3.11.9`) |
+| `Build failed` | check the `pip install` log. Python version: Render ignores `runtime.txt` and reads `.python-version` (`3.11`); if you pinned a bad version with the `PYTHON_VERSION` env var, remove it |
+| `Network is unreachable` / `no tenant identifier provided` | you are using Supabase's **Direct connection** (IPv6-only) — switch to the **Session pooler** URI (port 5432, user `postgres.[PROJECT-REF]`). See `docs/DEPLOYMENT.md` |
 | `Application failed to respond` | gunicorn start command must be exactly the one in the README (or `Procfile`) |
 | Deploy succeeds but bot is dead | Render → Logs: look for `configuration problems detected: (...)` and fix those env vars |
 | Restart loop (crash on boot) | wrong `BOT_TOKEN` format, or `DATABASE_URL` empty and `WEBHOOK_REQUIRE_SECRET=true` without `WEBHOOK_SECRET` |
@@ -133,6 +134,30 @@ Useful log lines and what they mean:
 | `duplicate update skipped` | Telegram redelivery — harmless |
 
 Set `LOG_LEVEL=DEBUG` in Render for verbose output (never logs secrets).
+
+---
+
+## The bot is silent: run the doctor first
+
+```
+GET https://<your-service>.onrender.com/diagnose?token=<WEBHOOK_SECRET>
+```
+
+It checks, in one request: configuration, PostgreSQL, `getMe` (including
+**privacy mode**), `getWebhookInfo` (registered URL + Telegram's `last_error_message`),
+group membership and the slash-commands, and returns Bengali fix hints.
+
+The three failures it reports most often:
+
+| Symptom | Cause | Fix |
+|---|---|---|
+| `last_error_message` contains **404 Not Found**, registered URL ends with `/webhook/webhook` | `PUBLIC_URL` was set to the full webhook URL instead of the base URL | Render → Environment → `PUBLIC_URL` = `https://<service>.onrender.com` (no path), then open `/set_webhook?token=...` |
+| `last_error_message` contains **403 Forbidden** | Telegram was registered without `secret_token`, or `WEBHOOK_SECRET` changed | open `/set_webhook?token=<current WEBHOOK_SECRET>` — it re-registers with the secret |
+| `privacy_mode: ENABLED` | BotFather privacy mode is on, so the bot never receives normal group messages | `/setprivacy` → **Disable** → remove the bot from the group and add it again |
+
+> Setting the webhook **before or after** the deploy makes no difference: the bot
+> re-registers it on every startup (`SET_WEBHOOK_ON_STARTUP=true`). Only the URL
+> and the secret have to match.
 
 ---
 

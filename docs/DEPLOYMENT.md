@@ -70,11 +70,11 @@ Render → your service → **Environment** → *Add Environment Variable*:
 
 | Key | Value | Notes |
 |---|---|---|
-| `PYTHON_VERSION` | `3.11.9` | optional, `runtime.txt` already sets it |
+| `PYTHON_VERSION` | `3.11.9` | **optional** — Render reads the `.python-version` file (`3.11`) from the repo root; `runtime.txt` is ignored by Render. Only add this variable if you want to pin the exact patch version (must be fully qualified) |
 | `BOT_TOKEN` | `123456789:AAH...` | from BotFather |
 | `GROQ_API_KEY` | `gsk_...` | from Groq console |
 | `GROQ_MODEL` | `openai/gpt-oss-120b` | change any time |
-| `DATABASE_URL` | `postgresql://postgres.xxx:pw@...pooler.supabase.com:5432/postgres` | Supabase URI |
+| `DATABASE_URL` | `postgresql://postgres.[PROJECT-REF]:[PASSWORD]@aws-0-[REGION].pooler.supabase.com:5432/postgres` | **Session pooler** URI (see the box below) |
 | `ADMIN_ID` | `123456789` | your Telegram id |
 | `TARGET_ADMIN_ID` | `123456789` | memory source |
 | `GROUP_ID` | `-1001234567890` | your group |

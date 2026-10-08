@@ -32,7 +32,8 @@
 
 | ফাইল | লাইন | কাজ |
 |---|---|---|
-| `app.py` | 259 | Flask: `/`, `/health`, `/version`, `/webhook`, `/telegram/webhook`, `/set_webhook` + নিরাপদ error handler |
+| `app.py` | — | Flask: `/`, `/health`, `/version`, `/diagnose` (🩺 doctor), `/webhook`, `/telegram/webhook`, `/set_webhook` + নিরাপদ error handler |
+| `diagnostics.py` | — | এক লিংকে সমস্যা নির্ণয়: webhook URL, privacy mode, DB, group membership, বাংলা সমাধান |
 | `bot.py` | 412 | Telegram `Application` lifecycle (webhook/polling), auto-retry + cooldown, webhook set/delete |
 | `config.py` | 601 | সব `.env` variable, validation, placeholder detect, secret redaction, `public_summary()` |
 | `database.py` | 1566 | PostgreSQL data access — connection pool, parameterized SQL, সব table-এর CRUD, maintenance |
@@ -42,7 +43,8 @@
 | `requirements-dev.txt` | — | + pytest |
 | `Procfile` | — | `gunicorn --bind 0.0.0.0:$PORT --workers 1 --threads 4 --timeout 120 app:app` |
 | `render.yaml` | — | Render Blueprint (free plan, health check `/health`, secret `sync:false`) |
-| `runtime.txt` / `pytest.ini` / `.gitignore` / `.env.example` / `LICENSE` | — | Python 3.11.9 · pytest config · ignore rules · env template · MIT |
+| `.python-version` (Render-এর পড়া ফাইল) · `runtime.txt` / `pytest.ini` / `.gitignore` / `.env.example` / `LICENSE` | — | Python 3.11 · config · ignore rules · env template · MIT |
+| `DEPLOY_A_TO_Z.md` | — | ZIP → GitHub → Render পর্যন্ত হুবহু ধাপে ধাপে গাইড (কোন ফাইল upload হবে/হবে না) |
 | `README.md` | 660+ | ১৯ ধাপের beginner-friendly সেটআপ গাইড (+ privacy mode, checklist, troubleshooting) |
 
 ### `ai/` — ১৯৯৪ লাইন (৮ ফাইল)
@@ -166,7 +168,7 @@
 
 ## 8. ZIP-এ কী আছে, কী নেই
 
-**আছে:** সব source code, `database/schema.sql`, `tests/` (১৬ module), `scripts/` (১১টি), `docs/` (৬টি), `README.md` (১৯ ধাপ), `LICENSE` (MIT), `requirements*.txt`, `Procfile`, `runtime.txt`, `render.yaml`, `pytest.ini`, `.env.example`, `.gitignore`।
+**আছে:** সব source code, `database/schema.sql`, `tests/` (১৬ module), `scripts/` (১১টি), `docs/` (৭টি), `README.md` (১৯ ধাপ), `LICENSE` (MIT), `requirements*.txt`, `Procfile`, `runtime.txt`, `render.yaml`, `pytest.ini`, `.env.example`, `.gitignore`।
 
 **নেই (ইচ্ছাকৃতভাবে):** `.env` (আসল secret), `__pycache__/`, `.pytest_cache/`, virtualenv, কোনো API key/token/password।
 
