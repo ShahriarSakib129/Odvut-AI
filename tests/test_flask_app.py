@@ -242,3 +242,121 @@ def test_health_reports_degraded_when_the_bot_cannot_start(settings, monkeypatch
         assert payload["status"] == "degraded"
         assert payload["telegram"]["start_error"]
         assert "***REDACTED***" in payload["telegram"]["start_error"]
+
+
+class TestUrlForgiveness:
+    """Beginners type URLs by hand: a trailing slash must not 404."""
+
+    def test_health_with_trailing_slash(self, client):
+        assert client.get("/health/").status_code == 200
+
+    def test_set_webhook_aliases_exist(self, client):
+        for path in ("/set_webhook", "/set_webhook/", "/set-webhook", "/setwebhook"):
+            response = client.get(path)
+            assert response.status_code == 403, f"{path} should exist but ask for the token"
+            assert response.get_json()["error"] == "unauthorized"
+
+    def test_unknown_path_lists_endpoints(self, client):
+        response = client.get("/set_webook")     # classic typo
+        payload = response.get_json()
+        assert response.status_code == 404
+        assert payload["error"] == "not found"
+        assert any("/set_webhook" in entry for entry in payload["endpoints"])
+
+    def test_get_on_webhook_explains_itself(self, client):
+        response = client.get("/webhook")
+        assert response.status_code == 405
+        assert "/set_webhook" in (response.get_json()["hint"] or "")
+
+
+class TestDiagnoseEndpoint:
+    """/diagnose is the one-link "why is my bot silent?" doctor."""
+
+    class FakeTelegram:
+        """Records calls and returns canned Telegram responses."""
+
+        def __init__(self, *, webhook_url="", last_error="", privacy_off=True,
+                     bot_in_group=True, url_param="first"):
+            self.calls = []
+            self.webhook_url = webhook_url
+            self.last_error = last_error
+            self.privacy_off = privacy_off
+            self.bot_in_group = bot_in_group
+            self.url_param = url_param
+
+        def __call__(self, token, method, **params):
+            self.calls.append((method, params))
+            if method == "getMe":
+                return {"ok": True, "result": {"id": 999, "username": "MyBot",
+                                               "can_read_all_group_messages": self.privacy_off}}
+            if method == "getWebhookInfo":
+                url = self.webhook_url
+                if self.url_param == "expected" and params.get("expected"):
+                    url = params["expected"]
+                return {"ok": True, "result": {"url": url, "pending_update_count": 0,
+                                               "last_error_message": self.last_error}}
+            if method == "getChat":
+                if params.get("chat_id") == -100999:      # unknown chat
+                    return {"ok": False, "description": "chat not found"}
+                return {"ok": True, "result": {"title": "INFO GROUP", "type": "supergroup"}}
+            if method == "getChatMember":
+                return {"ok": True, "result": {"status": "member" if self.bot_in_group else "left"}}
+            if method == "getMyCommands":
+                return {"ok": True, "result": [{"command": "ask"}]}
+            return {"ok": False, "description": "unexpected method"}
+
+    def _client(self, monkeypatch, settings, fake, database=None):
+        import app as app_module
+        import diagnostics
+
+        monkeypatch.setattr(app_module, "_manager", lambda: FakeManager())
+        monkeypatch.setattr(diagnostics, "_telegram_call", staticmethod(fake))
+        flask_app = app_module.create_app(settings, bootstrap=False)
+        return flask_app.test_client()
+
+    def test_requires_token(self, client):
+        assert client.get("/diagnose").status_code == 403
+        assert client.get("/doctor").status_code == 403
+
+    def test_healthy_deployment(self, monkeypatch, settings):
+        fake = self.FakeTelegram(webhook_url=settings.webhook_url)
+        client = self._client(monkeypatch, settings, fake)
+        payload = client.get(f"/diagnose?token={SECRET}").get_json()
+        assert payload["verdict"] == "healthy", payload["fixes_bn"]
+        assert payload["registered_webhook_url"] == settings.webhook_url
+
+    def test_detects_double_webhook_path(self, monkeypatch, settings):
+        fake = self.FakeTelegram(webhook_url=settings.webhook_url + "/webhook",
+                                 last_error="Wrong response from the webhook: 404 Not Found")
+        client = self._client(monkeypatch, settings, fake)
+        payload = client.get(f"/diagnose?token={SECRET}").get_json()
+        assert payload["verdict"] == "broken"
+        assert any("PUBLIC_URL" in fix for fix in payload["fixes_bn"])
+
+    def test_detects_403_secret_mismatch(self, monkeypatch, settings):
+        fake = self.FakeTelegram(webhook_url=settings.webhook_url,
+                                 last_error="Wrong response from the webhook: 403 Forbidden")
+        client = self._client(monkeypatch, settings, fake)
+        payload = client.get(f"/diagnose?token={SECRET}").get_json()
+        assert any("WEBHOOK_SECRET" in fix for fix in payload["fixes_bn"])
+
+    def test_detects_enabled_privacy_mode(self, monkeypatch, settings):
+        fake = self.FakeTelegram(webhook_url=settings.webhook_url, privacy_off=False)
+        client = self._client(monkeypatch, settings, fake)
+        payload = client.get(f"/diagnose?token={SECRET}").get_json()
+        assert any("setprivacy" in fix for fix in payload["fixes_bn"])
+
+    def test_detects_missing_webhook(self, monkeypatch, settings):
+        fake = self.FakeTelegram(webhook_url="")
+        client = self._client(monkeypatch, settings, fake)
+        payload = client.get(f"/diagnose?token={SECRET}").get_json()
+        assert payload["verdict"] == "broken"
+        assert any("set_webhook" in fix for fix in payload["fixes_bn"])
+
+    def test_never_leaks_secrets(self, monkeypatch, settings):
+        fake = self.FakeTelegram(webhook_url=settings.webhook_url)
+        client = self._client(monkeypatch, settings, fake)
+        body = client.get(f"/diagnose?token={SECRET}").get_data(as_text=True)
+        assert SECRET not in body
+        assert settings.bot_token not in body
+        assert settings.groq_api_key not in body

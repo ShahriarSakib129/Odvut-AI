@@ -145,3 +145,33 @@ def test_database_url_must_look_like_postgres():
 def test_autostart_can_be_disabled():
     settings = load_settings(base_env(AUTOSTART_BOT="false"))
     assert settings.autostart_bot is False
+
+
+class TestPublicUrlNormalisation:
+    """The most common copy/paste mistake: pasting the full webhook URL."""
+
+    def test_plain_url(self):
+        settings = load_settings(base_env(PUBLIC_URL="https://app.onrender.com"))
+        assert settings.webhook_url == "https://app.onrender.com/webhook"
+
+    def test_trailing_slash(self):
+        settings = load_settings(base_env(PUBLIC_URL="https://app.onrender.com/"))
+        assert settings.webhook_url == "https://app.onrender.com/webhook"
+
+    def test_full_webhook_url_is_trimmed(self):
+        settings = load_settings(base_env(PUBLIC_URL="https://app.onrender.com/webhook"))
+        assert settings.webhook_url == "https://app.onrender.com/webhook"
+        assert "webhook/webhook" not in settings.webhook_url
+        assert any("PUBLIC_URL" in warning for warning in settings.warnings)
+
+    def test_full_webhook_url_with_trailing_slash(self):
+        settings = load_settings(base_env(PUBLIC_URL="https://app.onrender.com/webhook/"))
+        assert settings.webhook_url == "https://app.onrender.com/webhook"
+
+    def test_alias_path_is_trimmed(self):
+        settings = load_settings(base_env(PUBLIC_URL="https://app.onrender.com/telegram/webhook"))
+        assert settings.webhook_url == "https://app.onrender.com/webhook"
+
+    def test_whitespace_is_ignored(self):
+        settings = load_settings(base_env(PUBLIC_URL="  https://app.onrender.com  "))
+        assert settings.webhook_url == "https://app.onrender.com/webhook"
