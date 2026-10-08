@@ -47,6 +47,32 @@ class ApplicationNotReady(RuntimeError):
     """Raised when an update arrives before the application finished starting."""
 
 
+
+WEBHOOK_SETUP_TIMEOUT_SECONDS = 60.0
+START_STEP_TIMEOUT = 45.0
+
+
+def schedule_webhook_setup(loop: asyncio.AbstractEventLoop, application: Any) -> None:
+    """Run ``_post_init`` (webhook registration + command menu) without blocking start.
+
+    Non-blocking by design: it returns immediately, the work runs as a task on
+    ``loop``, is bounded by a timeout, and any failure is logged (never raised).
+    """
+
+    async def _runner() -> None:
+        try:
+            await asyncio.wait_for(_post_init(application),
+                                   timeout=WEBHOOK_SETUP_TIMEOUT_SECONDS)
+            logger.info("webhook setup finished")
+        except asyncio.TimeoutError:
+            logger.error("webhook setup timed out after %.0fs (will retry on next restart "
+                         "or /set_webhook)", WEBHOOK_SETUP_TIMEOUT_SECONDS)
+        except Exception as exc:  # never let a setup hiccup affect the running bot
+            logger.error("webhook setup failed: %s", redact(str(exc))[:200])
+
+    loop.create_task(_runner())
+
+
 class ApplicationManager:
     """Owns the PTB ``Application`` and its background event loop."""
 
@@ -171,18 +197,15 @@ class ApplicationManager:
                 self.settings, for_webhook=(self.mode == "webhook")
             )
             self._app = application
-            loop.run_until_complete(application.initialize())
-            loop.run_until_complete(application.start())
-            # PTB's initialize()/start() do NOT run post_init (only run_webhook /
-            # run_polling do). Without this call the automatic webhook registration
-            # and command menu setup never happen in webhook mode, so the Telegram
-            # webhook stays empty and updates pile up unanswered.
-            if self.mode == "webhook":
-                try:
-                    loop.run_until_complete(_post_init(application))
-                except Exception as exc:  # never let a webhook/setup hiccup kill the bot
-                    logger.error("post-init (webhook registration) failed: %s",
-                                 redact(str(exc))[:200])
+            # Each Telegram-facing step is bounded: a hang becomes a visible,
+            # logged error in /health (start_error) instead of "starting" forever.
+            self._step = "initialize"
+            logger.info("telegram start: initialize()")
+            loop.run_until_complete(asyncio.wait_for(application.initialize(), START_STEP_TIMEOUT))
+            self._step = "start"
+            logger.info("telegram start: start()")
+            loop.run_until_complete(asyncio.wait_for(application.start(), START_STEP_TIMEOUT))
+            logger.info("telegram start: application running")
             if self.mode == "polling":
                 loop.run_until_complete(
                     application.updater.start_polling(
@@ -196,9 +219,16 @@ class ApplicationManager:
             self._started_at = time.time()
             logger.info("Telegram application started (mode=%s, bot=@%s)",
                         self.mode, self.bot_username)
+            if self.mode == "webhook":
+                # PTB's initialize()/start() do NOT run post_init. Register the webhook
+                # and command menu in the background so a slow Telegram call can never
+                # keep the bot in "starting" (which makes every update get a 503).
+                schedule_webhook_setup(loop, application)
             loop.run_forever()
         except Exception as exc:  # pragma: no cover - environment specific
-            self._start_error = redact(str(exc))[:300]
+            step = getattr(self, "_step", "startup")
+            detail = redact(str(exc)) or type(exc).__name__
+            self._start_error = redact(f"{step} failed: {detail}")[:300]
             logger.exception("Telegram application failed to start: %s", self._start_error)
         finally:
             try:
