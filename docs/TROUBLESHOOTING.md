@@ -147,6 +147,13 @@ It checks, in one request: configuration, PostgreSQL, `getMe` (including
 **privacy mode**), `getWebhookInfo` (registered URL + Telegram's `last_error_message`),
 group membership and the slash-commands, and returns Bengali fix hints.
 
+Offline alternatives (no browser needed):
+
+```bash
+python scripts/set_webhook.py --info          # pretty report, Bengali fix hints
+python scripts/set_webhook.py --info --json   # machine readable
+```
+
 The three failures it reports most often:
 
 | Symptom | Cause | Fix |
