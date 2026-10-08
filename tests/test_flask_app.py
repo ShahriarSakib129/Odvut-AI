@@ -360,3 +360,59 @@ class TestDiagnoseEndpoint:
         assert SECRET not in body
         assert settings.bot_token not in body
         assert settings.groq_api_key not in body
+
+
+class TestWebhookAutoRegistration:
+    """Regression: PTB's initialize()/start() never run post_init, so the webhook
+    used to stay empty on Render. The bot must now register it itself on start."""
+
+    def test_post_init_is_invoked_in_webhook_mode(self, monkeypatch):
+        import asyncio
+        import bot as bot_module
+
+        calls = []
+
+        async def fake_post_init(application):
+            calls.append(application)
+
+        class FakeApp:
+            async def initialize(self): pass
+            async def start(self): pass
+
+        monkeypatch.setattr(bot_module, "_post_init", fake_post_init)
+        monkeypatch.setattr(bot_module, "build_application",
+                            lambda settings, for_webhook: (FakeApp(), None))
+        manager = bot_module.ApplicationManager.__new__(bot_module.ApplicationManager)
+        manager.mode = "webhook"
+        manager.settings = None
+        manager._loop = None
+        manager._app = None
+        manager._started = False
+        manager._start_error = None
+        manager._stop_event = None
+        manager.settings = bot_module.get_settings()
+        manager._run_loop()
+        assert len(calls) == 1, "post_init (webhook registration) was not run"
+
+
+class TestAuthFailureReason:
+    """A 403 must tell the operator *why* without ever echoing the secret."""
+
+    def test_empty_server_secret_is_explained(self, monkeypatch, settings):
+        import app as app_module
+        from dataclasses import replace
+        empty = replace(settings, webhook_secret="")
+        monkeypatch.setattr(app_module, "_manager", lambda: FakeManager())
+        client = app_module.create_app(empty, bootstrap=False).test_client()
+        payload = client.get("/set_webhook?token=anything").get_json()
+        assert "EMPTY" in payload["reason"]
+
+    def test_length_mismatch_is_explained_without_leaking(self, client):
+        response = client.get("/set_webhook?token=wrong-value")
+        payload = response.get_json()
+        assert response.status_code == 403
+        assert "does not match" in payload["reason"]
+        assert SECRET not in response.get_data(as_text=True)
+
+    def test_missing_token_is_explained(self, client):
+        assert "no token" in client.get("/set_webhook").get_json()["reason"]
