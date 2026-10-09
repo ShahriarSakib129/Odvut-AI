@@ -177,6 +177,16 @@ class ApplicationManager:
         A failed start is retried, but not more often than every
         ``START_COOLDOWN_SECONDS`` -- /health may be polled frequently.
         """
+        with self._lock:
+            # A startup thread can disappear before it reaches the normal
+            # ``finally`` block (for example, a worker interruption during
+            # application construction).  Do not leave the process wedged in
+            # ``starting=true`` forever; allow the normal cooldown retry.
+            if (self._starting and not self._started and self._thread is not None
+                    and not self._thread.is_alive()):
+                self._starting = False
+                self._start_error = "startup thread exited unexpectedly"
+                logger.error("telegram startup thread exited before readiness")
         if self._started or self._starting:
             return
         if self._last_attempt_at and (time.time() - self._last_attempt_at) < START_COOLDOWN_SECONDS:
@@ -207,6 +217,16 @@ class ApplicationManager:
             self._step = "initialize"
             logger.info("telegram start: initialize()")
             loop.run_until_complete(asyncio.wait_for(application.initialize(), START_STEP_TIMEOUT))
+            if self.mode == "polling":
+                # Manual initialize()/start() does not invoke PTB's post_init
+                # callback. Run it explicitly in local polling mode so the
+                # database retry, command menu, and other startup tasks are
+                # not silently skipped.
+                self._step = "post_init"
+                logger.info("telegram start: post_init()")
+                loop.run_until_complete(asyncio.wait_for(
+                    _post_init(application), WEBHOOK_SETUP_TIMEOUT_SECONDS
+                ))
             self._step = "start"
             logger.info("telegram start: start()")
             loop.run_until_complete(asyncio.wait_for(application.start(), START_STEP_TIMEOUT))
@@ -216,7 +236,6 @@ class ApplicationManager:
                     application.updater.start_polling(
                         allowed_updates=ALLOWED_UPDATES,
                         drop_pending_updates=self.settings.drop_pending_updates,
-                        close_loop=False,
                     )
                 )
                 logger.info("long polling started")
