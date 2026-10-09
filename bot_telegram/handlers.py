@@ -860,18 +860,22 @@ async def _post_init(application: Application) -> None:
     try:
         await application.bot.set_my_commands(
             [BotCommand(name, desc) for name, desc in (
+                ("start", "Bot চালু ও পরিচিতি"),
                 ("ask", "Admin-এর তথ্যের ভিত্তিতে প্রশ্নের উত্তর"),
                 ("help", "সাহায্য"),
                 ("memory", "আমি কী মনে রেখেছি"),
-                ("status", "বot status"),
+                ("status", "Bot status"),
                 ("whoami", "তোমার Telegram id"),
+                ("ping", "Bot alive কিনা পরীক্ষা"),
             )],
             scope=BotCommandScopeAllPrivateChats(),
         )
         await application.bot.set_my_commands(
-            [BotCommand("ask", "প্রশ্ন করো: /ask BTC কেমন?"),
+            [BotCommand("start", "Bot চালু ও পরিচিতি"),
+             BotCommand("ask", "প্রশ্ন করো: /ask BTC কেমন?"),
              BotCommand("memory", "memory সারসংক্ষেপ"),
-             BotCommand("help", "সাহায্য")],
+             BotCommand("help", "সাহায্য"),
+             BotCommand("ping", "Bot alive কিনা পরীক্ষা")],
             scope=BotCommandScopeAllGroupChats(),
         )
     except TelegramError as exc:
