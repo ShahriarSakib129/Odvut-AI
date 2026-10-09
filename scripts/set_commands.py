@@ -19,17 +19,21 @@ PRIVATE_SCOPE = {"type": "all_private_chats"}
 GROUP_SCOPE = {"type": "all_group_chats"}
 
 PRIVATE_COMMANDS = [
+    {"command": "start", "description": "Bot চালু ও পরিচিতি"},
     {"command": "ask", "description": "Admin-এর তথ্যের ভিত্তিতে প্রশ্নের উত্তর"},
     {"command": "help", "description": "সাহায্য ও কমান্ডের তালিকা"},
     {"command": "memory", "description": "আমি কী মনে রেখেছি"},
     {"command": "status", "description": "Bot ও AI স্ট্যাটাস"},
     {"command": "whoami", "description": "তোমার Telegram id / chat id"},
+    {"command": "ping", "description": "Bot alive কিনা পরীক্ষা"},
 ]
 
 GROUP_COMMANDS = [
+    {"command": "start", "description": "Bot চালু ও পরিচিতি"},
     {"command": "ask", "description": "প্রশ্ন করো: /ask BTC এখন কেমন?"},
     {"command": "memory", "description": "Memory সারসংক্ষেপ"},
     {"command": "help", "description": "সাহায্য"},
+    {"command": "ping", "description": "Bot alive কিনা পরীক্ষা"},
 ]
 
 
