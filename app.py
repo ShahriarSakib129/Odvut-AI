@@ -112,10 +112,12 @@ def create_app(settings: Settings | None = None, *, bootstrap: bool = True) -> F
         # "degraded" tells the operator (and UptimeRobot keyword monitors) that
         # something is wrong while still answering HTTP 200, so an UptimeRobot
         # monitor does not bounce up and down on every cold start.
+        bot_ready = bool(telegram.get("started")) and not bool(telegram.get("starting"))
         bot_broken = (bool(telegram.get("start_error"))
                       and not telegram.get("started") and not telegram.get("starting"))
         payload: dict[str, Any] = {
-            "status": "ok" if (settings.is_configured and db_ok and not bot_broken) else "degraded",
+            "status": "ok" if (settings.is_configured and db_ok and bot_ready and not bot_broken)
+                      else "degraded",
             "service": SERVICE_NAME,
             "version": VERSION,
             "uptime_seconds": int(time.time() - START_TIME),

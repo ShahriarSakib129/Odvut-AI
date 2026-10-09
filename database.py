@@ -19,6 +19,7 @@ All table names match ``database/schema.sql``:
 from __future__ import annotations
 
 import json
+import hashlib
 import re
 import threading
 import time
@@ -622,6 +623,101 @@ def count_admin_messages(chat_id: int | None = None) -> int:
             {"chat_id": int(chat_id)},
         )
     return int(row["c"]) if row else 0
+
+
+def _import_id(value: str) -> int:
+    """Stable negative Telegram-like id reserved for imported records."""
+    digest = hashlib.sha256(value.encode("utf-8")).hexdigest()[:15]
+    return -int(digest, 16)
+
+
+def import_admin_memory(records: Sequence[Mapping[str, Any]], *, chat_id: int,
+                        admin_id: int, source: str = "manual import") -> dict[str, int]:
+    """Import memory rows atomically; existing content is never overwritten."""
+    result = {"imported": 0, "duplicates": 0, "failed": 0}
+    with get_connection() as conn:
+        with conn.cursor() as cur:
+            for record in records:
+                text = str(record.get("text") or record.get("message") or "").strip()
+                if not text:
+                    result["failed"] += 1
+                    continue
+                fingerprint = hashlib.sha256(
+                    f"{chat_id}|{admin_id}|{text}".encode("utf-8")).hexdigest()
+                message_id = _import_id(f"memory:{fingerprint}")
+                cur.execute(
+                    """
+                    insert into public.admin_messages
+                      (telegram_message_id, chat_id, admin_id, admin_username,
+                       message_text, normalized_text, message_type, topic, keywords,
+                       crypto_terms, language, message_timestamp)
+                    values (%(message_id)s, %(chat_id)s, %(admin_id)s, %(username)s,
+                            %(text)s, %(normalized)s, %(message_type)s, %(topic)s,
+                            %(keywords)s, %(crypto)s, %(language)s, %(timestamp)s)
+                    on conflict (chat_id, telegram_message_id) do nothing
+                    """,
+                    {"message_id": message_id, "chat_id": int(chat_id),
+                     "admin_id": int(admin_id), "username": record.get("username"),
+                     "text": text, "normalized": normalize_text(text),
+                     "message_type": f"imported:{str(record.get('source') or source)[:80]}",
+                     "topic": classify_topic(text), "keywords": extract_keywords(text, max_keywords=20),
+                     "crypto": extract_crypto_terms(text), "language": _detect_language(text),
+                     "timestamp": record.get("date") or datetime.now(timezone.utc)})
+                if cur.rowcount:
+                    result["imported"] += 1
+                else:
+                    result["duplicates"] += 1
+    if result["imported"]:
+        bump_memory_generation()
+    return result
+
+
+def import_qa_memory(records: Sequence[Mapping[str, Any]], *, chat_id: int,
+                     admin_id: int, source: str = "manual import") -> dict[str, int]:
+    """Import Q&A rows atomically using stable ids and the existing schema."""
+    result = {"imported": 0, "duplicates": 0, "failed": 0}
+    with get_connection() as conn:
+        with conn.cursor() as cur:
+            for record in records:
+                question = str(record.get("question") or "").strip()
+                answer = str(record.get("answer") or "").strip()
+                if not question or not answer:
+                    result["failed"] += 1
+                    continue
+                fingerprint = hashlib.sha256(
+                    f"{chat_id}|{question}|{answer}".encode("utf-8")).hexdigest()
+                q_id = _import_id(f"qa-question:{fingerprint}")
+                a_id = _import_id(f"qa-answer:{fingerprint}")
+                ts = record.get("date") or datetime.now(timezone.utc)
+                combined = f"{question} {answer}"
+                cur.execute(
+                    """
+                    insert into public.qa_memory
+                      (chat_id, member_user_id, member_username, question_message_id,
+                       question_text, normalized_question, admin_message_id, admin_id,
+                       admin_answer_text, normalized_answer, pair_method,
+                       pair_confidence, topic, keywords, crypto_terms, language,
+                       question_timestamp, answer_timestamp)
+                    values (%(chat_id)s, 0, null, %(q_id)s, %(question)s, %(q_norm)s,
+                            %(a_id)s, %(admin_id)s, %(answer)s, %(a_norm)s, 'manual',
+                            1.0, %(topic)s, %(keywords)s, %(crypto)s, %(language)s,
+                            %(timestamp)s, %(timestamp)s)
+                    on conflict (chat_id, question_message_id) do nothing
+                    """,
+                    {"chat_id": int(chat_id), "q_id": q_id, "question": question,
+                     "q_norm": normalize_text(question), "a_id": a_id,
+                     "admin_id": int(admin_id), "answer": answer,
+                     "a_norm": normalize_text(answer), "topic": classify_topic(combined),
+                     "keywords": extract_keywords(combined, max_keywords=25),
+                     "crypto": extract_crypto_terms(combined), "language": _detect_language(question),
+                     "timestamp": ts})
+                if cur.rowcount:
+                    result["imported"] += 1
+                else:
+                    result["duplicates"] += 1
+    if result["imported"]:
+        bump_memory_generation()
+    return result
 
 
 def recent_admin_messages(chat_id: int, limit: int = 10,
