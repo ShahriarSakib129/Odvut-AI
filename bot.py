@@ -50,6 +50,7 @@ class ApplicationNotReady(RuntimeError):
 
 WEBHOOK_SETUP_TIMEOUT_SECONDS = 60.0
 START_STEP_TIMEOUT = 45.0
+WEBHOOK_START_TIMEOUT_SECONDS = 60.0
 
 
 def schedule_webhook_setup(loop: asyncio.AbstractEventLoop, application: Any) -> None:
@@ -286,7 +287,8 @@ class ApplicationManager:
     # update ingestion (webhook path)
     # ------------------------------------------------------------------ #
     def process_update(self, update_data: dict[str, Any], *,
-                       timeout: float = 25.0, start_timeout: float = 12.0) -> bool:
+                       timeout: float = 25.0,
+                       start_timeout: float = WEBHOOK_START_TIMEOUT_SECONDS) -> bool:
         """Hand a raw Telegram update dict to PTB. Returns ``True`` on success."""
         if not isinstance(update_data, dict) or "update_id" not in update_data:
             logger.warning("malformed update payload rejected")
