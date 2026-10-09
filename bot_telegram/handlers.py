@@ -19,12 +19,15 @@ Everything else is only *tracked* (admin memory / Q&A pairing), never answered.
 from __future__ import annotations
 
 import asyncio
+import json
 import time
 from typing import TYPE_CHECKING, Any, Sequence
 
 try:  # python-telegram-bot is a hard dependency
     from telegram import (
         BotCommand,
+        BotCommandScopeChat,
+        BotCommandScopeChatMember,
         BotCommandScopeAllGroupChats,
         BotCommandScopeAllPrivateChats,
         Message,
@@ -49,6 +52,7 @@ from config import Settings, get_settings
 from services import Services, build_services, run_maintenance, startup_tasks
 from utils.helpers import chunk_text, human_count, human_time
 from utils.logger import get_logger
+from utils.telegram_format import html_code, html_text
 from utils.text import classify_topic, truncate
 
 from .permissions import GROUP_CHAT_TYPES, clean_question, describe_actor
@@ -60,8 +64,9 @@ logger = get_logger(__name__)
 
 ALLOWED_UPDATES: list[str] = ["message"]
 
-PUBLIC_COMMANDS = ("start", "help", "ask", "status", "memory", "whoami", "ping")
-ADMIN_COMMANDS = ("stats", "memory_stats", "clear_memory", "set", "reload", "maintenance",
+PUBLIC_COMMANDS = ("ask",)
+ADMIN_COMMANDS = ("admin", "status", "settings", "memory", "qa", "uploadmemory", "uploadqa",
+                  "help", "stats", "memory_stats", "clear_memory", "set", "reload", "maintenance",
                   "adminhelp")
 TOGGLE_KEYS = {
     "ai_enabled": "AI উত্তর চালু/বন্ধ",
@@ -102,7 +107,11 @@ async def _safe_send(message: Message, text: str, *, reply: bool = True,
         for attempt in (1, 2):
             try:
                 if first:
-                    await message.reply_text(chunk, disable_web_page_preview=True)
+                    await message.reply_text(
+                        chunk,
+                        parse_mode=ParseMode.HTML if allow_parse_mode else None,
+                        disable_web_page_preview=True,
+                    )
                 elif allow_parse_mode and attempt == 1:
                     await message.chat.send_message(
                         chunk, parse_mode=ParseMode.HTML, disable_web_page_preview=True)
@@ -151,6 +160,10 @@ async def _require_admin(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
     """Return ``True`` when the caller may use admin commands."""
     services = services_of(context)
     actor = services.permissions.actor_from(update)
+    if (actor.chat_type in GROUP_CHAT_TYPES
+            and not services.permissions.in_target_group(actor.chat_id)):
+        logger.warning("admin command denied outside target group: %s", describe_actor(actor))
+        return False
     if (services.settings.allow_group_admins and actor.chat_id
             and actor.chat_type in GROUP_CHAT_TYPES and not actor.is_group_admin
             and not actor.is_bot_admin):
@@ -170,6 +183,34 @@ async def _require_admin(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
             "(এটি ADMIN_ID-তে যোগ করতে হবে।)",
         )
     return False
+
+
+async def _require_group_member(update: Update, context: ContextTypes.DEFAULT_TYPE) -> bool:
+    """Allow only a current member of the one configured group."""
+    services = services_of(context)
+    message = update.effective_message
+    chat = update.effective_chat
+    user = update.effective_user
+    if (chat is None or getattr(chat, "type", "") not in GROUP_CHAT_TYPES
+            or not services.permissions.in_target_group(getattr(chat, "id", None))):
+        if message:
+            await _safe_send(message, "এই bot শুধু নির্ধারিত Telegram group-এ ব্যবহার করা যাবে।")
+        return False
+    if getattr(user, "is_bot", False) or not await services.permissions.is_authorized_member(
+            context.bot, chat.id, getattr(user, "id", None)):
+        if message:
+            await _safe_send(message, "এই group-এর বর্তমান member ছাড়া bot ব্যবহার করা যাবে না।")
+        return False
+    return True
+
+
+async def _require_admin_or_group_member(update: Update,
+                                         context: ContextTypes.DEFAULT_TYPE) -> bool:
+    """Allow the configured admin in private chat, or a group member in-group."""
+    services = services_of(context)
+    if services.permissions.is_bot_admin(getattr(update.effective_user, "id", None)):
+        return True
+    return await _require_group_member(update, context)
 
 
 def _actor_ids(update: Update) -> tuple[int | None, int | None, str | None]:
@@ -262,9 +303,11 @@ async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     services = services_of(context)
     settings = services.settings
     chat = update.effective_chat
+    if not await _require_admin(update, context):
+        return
     if chat and chat.type in GROUP_CHAT_TYPES:
         text = (
-            f"👋 <b>{settings.bot_name}</b> গ্রুপে active.\n\n"
+            f"👋 <b>{html_text(settings.bot_name)}</b> গ্রুপে active.\n\n"
             "এই গ্রুপের Admin-এর আগের উত্তর ও বিশ্লেষণের ভিত্তিতে আমি প্রশ্নের উত্তর দিই।\n\n"
             "ব্যবহার:\n"
             "• <code>/ask BTC এখন কেমন?</code>\n"
@@ -274,7 +317,7 @@ async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         )
     else:
         text = (
-            f"👋 স্বাগতম! আমি <b>{settings.bot_name}</b>।\n\n"
+            f"👋 স্বাগতম! আমি <b>{html_text(settings.bot_name)}</b>।\n\n"
             "গ্রুপের Admin যেসব ব্যাখ্যা/opinion শেয়ার করেছেন, তার ভিত্তিতে প্রশ্নের উত্তর দিই।\n\n"
             "যেভাবে প্রশ্ন করবে:\n"
             "• <code>/ask বিটকয়েন এখন কেমন?</code>\n"
@@ -286,28 +329,28 @@ async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
 
 async def cmd_help(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     services = services_of(context)
+    if not await _require_admin(update, context):
+        return
     text = (
-        f"🤖 <b>{services.settings.bot_name}</b> — সাহায্যের তালিকা\n\n"
-        "<b>সবার জন্য:</b>\n"
-        "/ask প্রশ্ন — Admin-এর তথ্যের ভিত্তিতে উত্তর\n"
-        "/memory — আমি কী কী মনে রেখেছি (সারসংক্ষেপ)\n"
-        "/status — bot ও AI service স্ট্যাটাস\n"
-        "/whoami — তোমার Telegram id ও chat id (setup-এর জন্য দরকারি)\n"
-        "/ping — bot সাড়া দিচ্ছে কি না\n"
-        "\nগ্রুপে bot-কে mention বা reply করেও প্রশ্ন করা যায়। "
-        "বাকি সময় bot চুপ থাকে, শুধু Admin-এর কথা memory-তে জমা করে।\n\n"
+        f"🤖 <b>{html_text(services.settings.bot_name)}</b> — সাহায্যের তালিকা\n\n"
+        "<b>Group members:</b>\n"
+        "/ask প্রশ্ন — Admin-এর তথ্যের ভিত্তিতে উত্তর\n\n"
+        "এছাড়া authorized group-এ আমাকে mention করে বা আমার message-এ reply করেও প্রশ্ন করা যাবে।\n"
+        "অপ্রাসঙ্গিক সাধারণ message-এ bot উত্তর দেবে না।\n\n"
         "<b>মনে রাখো:</b> আমি Admin নই। কোনো তথ্য memory-তে না থাকলে সেটা স্পষ্টভাবে বলব।"
     )
     if services.permissions.is_bot_admin(getattr(update.effective_user, "id", None)):
         text += (
             "\n\n<b>Admin commands:</b>\n"
-            "/stats, /memory_stats, /clear_memory, /set, /reload, /adminhelp"
+            "/admin, /status, /settings, /memory, /qa, /uploadmemory, /uploadqa"
         )
     await _safe_send(update.effective_message, text, allow_parse_mode=True)
 
 
 async def cmd_ask(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     services = services_of(context)
+    if not await _require_group_member(update, context):
+        return
     question = " ".join(context.args or []) if context.args else ""
     if not question:
         raw = getattr(update.effective_message, "text", "") or ""
@@ -318,13 +361,12 @@ async def cmd_ask(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
             "ব্যবহার: /ask তোমার প্রশ্ন\nউদাহরণ: /ask BTC এখন entry নেওয়া যাবে?",
         )
         return
-    if not services.permissions.in_target_group(getattr(update.effective_chat, "id", None)):
-        await _safe_send(update.effective_message, "ℹ️ এই bot শুধু নির্দিষ্ট গ্রুপের জন্য সেট করা।")
-        return
     await _answer_question(update, context, question, source="command")
 
 
 async def cmd_ping(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    if not await _require_admin(update, context):
+        return
     started = time.time()
     await _safe_send(update.effective_message,
                      f"🏓 পং! {(time.time() - started) * 1000:.0f} ms")
@@ -332,6 +374,8 @@ async def cmd_ping(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
 
 async def cmd_whoami(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     services = services_of(context)
+    if not await _require_admin(update, context):
+        return
     user = update.effective_user
     chat = update.effective_chat
     actor = services.permissions.actor_from(update)
@@ -345,20 +389,22 @@ async def cmd_whoami(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
     text = (
         "🪪 <b>তোমার তথ্য</b>\n"
         f"user id: <code>{getattr(user, 'id', '?')}</code>\n"
-        f"username: @{getattr(user, 'username', '—')}\n"
+        f"username: @{html_text(getattr(user, 'username', '—'))}\n"
         f"chat id: <code>{getattr(chat, 'id', '?')}</code> ({getattr(chat, 'type', '?')})\n"
         f"role: {', '.join(roles) if roles else 'Member'}\n\n"
         "<b>Setup-এ কোথায় বসাবে:</b>\n"
-        f"• BOT admin হলে → ADMIN_ID=<code>{getattr(user, 'id', '?')}</code>\n"
-        f"• এই গ্রুপ হলে → GROUP_ID=<code>{getattr(chat, 'id', '?')}</code>\n"
-        f"• Admin-এর কথা memory করতে হলে → TARGET_ADMIN_ID=<code>{getattr(user, 'id', '?')}</code>"
+        f"• BOT admin হলে → ADMIN_ID={html_code(getattr(user, 'id', '?'))}\n"
+        f"• এই গ্রুপ হলে → GROUP_ID={html_code(getattr(chat, 'id', '?'))}\n"
+        f"• Admin-এর কথা memory করতে হলে → TARGET_ADMIN_ID={html_code(getattr(user, 'id', '?'))}"
     )
     await _safe_send(update.effective_message, text, allow_parse_mode=True)
 
 
 async def cmd_status(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     services = services_of(context)
-    is_admin = services.permissions.is_bot_admin(getattr(update.effective_user, "id", None))
+    if not await _require_admin(update, context):
+        return
+    is_admin = True
     try:
         stats = await asyncio.to_thread(services.db.get_stats)
     except Exception:
@@ -380,7 +426,7 @@ async def cmd_status(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
         lines += [
             "",
             "<b>Admin detail</b>",
-            f"model: <code>{services.settings.groq_model}</code>",
+            f"model: {html_code(services.settings.groq_model)}",
             f"db latency: {db_health.get('latency_ms')} ms | pg_trgm: {db_health.get('pg_trgm')}",
             f"db missing tables: {db_health.get('missing_tables') or 'none'}",
             f"groq check: {'✅' if ai_status.get('ok') else '⚠️ ' + str(ai_status.get('error_kind'))}",
@@ -389,7 +435,7 @@ async def cmd_status(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
             f"open questions: {stats.get('open_questions', 0)} | "
             f"unanswered: {stats.get('unanswered_questions', 0)}",
             f"ai calls (24h): {(stats.get('ai_usage') or {}).get('calls', 0)}",
-            f"webhook: <code>{services.settings.webhook_url or 'not configured'}</code>",
+            f"webhook: {html_code(services.settings.webhook_url or 'not configured')}",
         ]
         if services.errors:
             lines.append(f"warnings: {', '.join(services.errors)}")
@@ -398,9 +444,11 @@ async def cmd_status(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
 
 async def cmd_memory(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     services = services_of(context)
+    if not await _require_admin(update, context):
+        return
     message = update.effective_message
     user = update.effective_user
-    is_admin = services.permissions.is_bot_admin(getattr(user, "id", None))
+    is_admin = True
     chat_id = update.effective_chat.id
     question = " ".join(context.args or []) if context.args else ""
 
@@ -415,19 +463,19 @@ async def cmd_memory(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
             logger.warning("/memory lookup failed: %s", exc)
             await _safe_send(message, "⚠️ memory খুঁজতে সমস্যা হয়েছে।")
             return
-        lines = [f"🔎 <b>\"{truncate(question, 80)}\" — memory মিল</b>",
+        lines = [f"🔎 <b>\"{html_text(truncate(question, 80))}\" — memory মিল</b>",
                  f"admin messages: {len(memory.admin_memories)} | Q&A: {len(memory.qa_pairs)}"]
         for item in memory.qa_pairs[:3]:
             date = item.answer_timestamp.strftime("%d %b %Y") if item.answer_timestamp else "?"
             lines.append(
                 f"\n• <b>Q&A</b> ({date}, score {item.score:.2f})\n"
-                f"  প্রশ্ন: {truncate(item.question, 120)}\n"
-                f"  উত্তর: {truncate(item.answer, 200)}"
+                f"  প্রশ্ন: {html_text(truncate(item.question, 120))}\n"
+                f"  উত্তর: {html_text(truncate(item.answer, 200))}"
             )
         for item in memory.admin_memories[:3]:
             date = item.timestamp.strftime("%d %b %Y") if item.timestamp else "?"
-            lines.append(f"\n• <b>Admin</b> ({date}, score {item.score:.2f}): "
-                         f"{truncate(item.text, 200)}")
+            lines.append(f"\n• <b>Admin</b> ({html_text(date)}, score {item.score:.2f}): "
+                         f"{html_text(truncate(item.text, 200))}")
         if not memory.item_count:
             lines.append("\nএই প্রশ্নের সাথে মেলে এমন কিছু memory পাওয়া যায়নি।")
         await _safe_send(message, "\n".join(lines), allow_parse_mode=True)
@@ -452,13 +500,14 @@ async def cmd_memory(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
         lines.append("\n<b>সাম্প্রতিক প্রশ্ন-উত্তর:</b>")
         for row in recent_qa:
             date = row.get("answer_timestamp")
-            lines.append(f"• {human_time(date)} — {truncate(row.get('question_text') or '', 90)}")
+            lines.append(f"• {html_text(human_time(date))} — "
+                         f"{html_text(truncate(row.get('question_text') or '', 90))}")
     if recent_admin:
         lines.append("\n<b>Admin-এর সাম্প্রতিক বক্তব্য:</b>")
         for row in recent_admin:
             limit = 160 if is_admin else 80
-            lines.append(f"• {human_time(row.get('message_timestamp'))} — "
-                         f"{truncate(row.get('message_text') or '', limit)}")
+            lines.append(f"• {html_text(human_time(row.get('message_timestamp')))} — "
+                         f"{html_text(truncate(row.get('message_text') or '', limit))}")
     lines.append(
         "\n<i>বিস্তারিত দেখতে: /memory তোমার প্রশ্ন</i>" if not is_admin
         else "\n<i>স্কোরসহ দেখতে: /memory তোমার প্রশ্ন | বিস্তারিত: /memory_stats</i>"
@@ -493,7 +542,7 @@ async def cmd_stats(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         f"avg latency: {usage.get('avg_latency_ms', 0)} ms",
         f"• database: {'✅' if db_health.get('available') else '⛔'} "
         f"{db_health.get('latency_ms', '—')} ms",
-        f"• model: <code>{services.settings.groq_model}</code>",
+        f"• model: {html_code(services.settings.groq_model)}",
     ]
     if stats.get("error"):
         lines.append(f"⚠️ {stats['error']}")
@@ -537,9 +586,13 @@ async def cmd_adminhelp(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
     flag_lines = [f"• {key}: {'on' if value else 'off'}" for key, value in flags.items()]
     text = (
         "🛠 <b>Admin commands</b>\n"
+        "/settings — safe configuration and health report\n"
         "/stats — সব statistics\n"
         "/memory_stats — memory analytics (topic, unanswered প্রশ্ন)\n"
+        "/qa — Q&A records ও analytics\n"
         "/memory [প্রশ্ন] — retrieval debug\n"
+        "/uploadmemory — historical Admin Memory import\n"
+        "/uploadqa — historical Q&A JSON import\n"
         "/clear_memory — memory মুছে ফেলা (confirmation লাগবে)\n"
         "/set &lt;key&gt; &lt;on|off&gt; — নিচের switch বদলানো\n"
         "/reload — .env আবার পড়ে settings refresh\n"
@@ -548,6 +601,92 @@ async def cmd_adminhelp(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
         "\n\n<b>clear_memory scope:</b> qa | admin | logs | cache | all"
     )
     await _safe_send(update.effective_message, text, allow_parse_mode=True)
+
+
+async def cmd_admin(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    await cmd_adminhelp(update, context)
+
+
+async def settings_report(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    await cmd_status(update, context)
+
+
+async def cmd_qa(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    await cmd_memory_stats(update, context)
+
+
+def _parse_import_records(raw: str, kind: str) -> tuple[list[dict[str, Any]], str | None]:
+    text = (raw or "").strip()
+    if not text:
+        return [], "কোনো data পাওয়া যায়নি।"
+    try:
+        payload = json.loads(text)
+    except json.JSONDecodeError as exc:
+        return [], f"JSON format ভুল: line {exc.lineno}, column {exc.colno}"
+    if not isinstance(payload, list):
+        payload = payload.get("records") if isinstance(payload, dict) else None
+    if not isinstance(payload, list) or not payload:
+        return [], "একটি non-empty JSON array দিন।"
+    records = [item for item in payload if isinstance(item, dict)]
+    if len(records) != len(payload):
+        return [], "প্রতিটি record একটি JSON object হতে হবে।"
+    if kind == "memory":
+        if any(not str(item.get("text") or item.get("message") or "").strip() for item in records):
+            return [], "Memory record-এ text অথবা message field প্রয়োজন।"
+    else:
+        if any(not str(item.get("question") or "").strip()
+               or not str(item.get("answer") or "").strip() for item in records):
+            return [], "প্রতিটি Q&A record-এ question এবং answer প্রয়োজন।"
+    return records, None
+
+
+async def _run_import(update: Update, context: ContextTypes.DEFAULT_TYPE,
+                      kind: str, raw: str) -> None:
+    if not await _require_admin(update, context):
+        return
+    services = services_of(context)
+    chat_id = services.settings.group_id
+    admin_id = getattr(update.effective_user, "id", None)
+    if chat_id is None or admin_id is None:
+        await _safe_send(update.effective_message, "GROUP_ID এবং admin identity সেট না থাকায় import করা যাচ্ছে না।")
+        return
+    records, error = _parse_import_records(raw, kind)
+    if error:
+        await _safe_send(update.effective_message, error)
+        return
+    try:
+        result = await asyncio.to_thread(
+            services.db.import_admin_memory if kind == "memory" else services.db.import_qa_memory,
+            records, chat_id=chat_id, admin_id=admin_id, source="Telegram admin import")
+    except Exception as exc:
+        logger.exception("%s import failed: %s", kind, str(exc)[:160])
+        await _safe_send(update.effective_message, "Import ব্যর্থ হয়েছে; database transaction rollback করা হয়েছে।")
+        return
+    await _safe_send(
+        update.effective_message,
+        f"{kind.upper()} import complete\n"
+        f"• imported: {result['imported']}\n"
+        f"• duplicates skipped: {result['duplicates']}\n"
+        f"• failed: {result['failed']}")
+
+
+async def cmd_uploadmemory(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    raw = " ".join(context.args or [])
+    if not raw:
+        await _safe_send(update.effective_message,
+                         "ব্যবহার: /uploadmemory [{\"text\":\"...\",\"date\":\"2026-10-09\"}]\n"
+                         "অথবা UTF-8 .txt/.json document পাঠান।")
+        return
+    await _run_import(update, context, "memory", raw)
+
+
+async def cmd_uploadqa(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    raw = " ".join(context.args or [])
+    if not raw:
+        await _safe_send(update.effective_message,
+                         "ব্যবহার: /uploadqa [{\"question\":\"...\",\"answer\":\"...\"}]")
+        return
+    await _run_import(update, context, "qa", raw)
 
 
 async def cmd_set(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -669,7 +808,7 @@ async def cmd_maintenance(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
     if not await _require_admin(update, context):
         return
     services = services_of(context)
-    result = await asyncio.to_thread(run_maintenance, services, True)
+    result = await asyncio.to_thread(run_maintenance, services, force=True)
     await _safe_send(update.effective_message,
                      f"🧽 maintenance: {result or 'skipped'}")
 
@@ -710,7 +849,9 @@ async def on_group_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -
     if tracking:
         logger.debug("tracked: %s", tracking)
 
-    # decide whether to answer
+    # Explicit mention/reply triggers remain available alongside /ask. Ordinary
+    # group messages still stay silent; tracking and Admin-memory collection
+    # above remain enabled.
     auto_reply = services.runtime_flag("auto_reply_enabled", True)
     if not auto_reply and not is_target_admin:
         return
@@ -719,6 +860,10 @@ async def on_group_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -
         bot_username=getattr(context.bot, "username", None),
     )
     if not should_answer:
+        return
+    if not await services.permissions.is_authorized_member(
+            context.bot, chat.id, getattr(user, "id", None)):
+        logger.warning("trigger ignored for non-member user=%s chat=%s", user.id, chat.id)
         return
     await _answer_question(update, context,
                            message.text or message.caption or "",
@@ -736,8 +881,11 @@ async def on_private_message(update: Update, context: ContextTypes.DEFAULT_TYPE)
         return
     if getattr(user, "is_bot", False):
         return
+    # Regular users have no private-chat AI, memory, or analytics surface.
+    # Admins may still use the explicit admin commands registered below.
+    if not services.permissions.is_bot_admin(getattr(user, "id", None)):
+        return
     if not services.settings.answer_in_private_chat:
-        await _safe_send(message, "ℹ️ এই bot শুধু গ্রুপে প্রশ্নের উত্তর দেয়।")
         return
     text = message.text or message.caption or ""
     if not text.strip():
@@ -753,6 +901,34 @@ async def on_private_message(update: Update, context: ContextTypes.DEFAULT_TYPE)
     cleaned = clean_question(text, getattr(context.bot, "username", None),
                              limit=services.settings.max_question_chars)
     await _answer_question(update, context, cleaned, source="private")
+
+
+async def on_private_document(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Accept only small UTF-8 admin import documents."""
+    if not await _require_admin(update, context):
+        return
+    document = getattr(update.effective_message, "document", None)
+    if document is None or int(getattr(document, "file_size", 0) or 0) > 1_000_000:
+        await _safe_send(update.effective_message, "শুধু 1 MB-এর মধ্যে UTF-8 .txt অথবা .json file গ্রহণ করা হয়।")
+        return
+    name = str(getattr(document, "file_name", "") or "").lower()
+    if not name.endswith((".txt", ".json")):
+        await _safe_send(update.effective_message, "শুধু UTF-8 .txt অথবা .json file গ্রহণ করা হয়।")
+        return
+    try:
+        telegram_file = await document.get_file()
+        raw_bytes = await telegram_file.download_as_bytearray()
+        raw = bytes(raw_bytes).decode("utf-8")
+    except (UnicodeDecodeError, TelegramError) as exc:
+        logger.warning("admin document read failed: %s", str(exc)[:160])
+        await _safe_send(update.effective_message, "File পড়া যায়নি। UTF-8 format যাচাই করুন।")
+        return
+    kind = "qa" if name.endswith(".json") and "qa" in name else "memory"
+    if name.endswith(".txt"):
+        records = [{"text": line.strip(), "source": name}
+                   for line in raw.splitlines() if line.strip()]
+        raw = json.dumps(records, ensure_ascii=False)
+    await _run_import(update, context, kind, raw)
 
 
 async def on_non_text_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -814,6 +990,11 @@ def register_handlers(application: Application, services: Services) -> None:
     application.add_handler(CommandHandler("whoami", cmd_whoami, block=False))
     application.add_handler(CommandHandler("status", cmd_status, block=False))
     application.add_handler(CommandHandler("memory", cmd_memory, block=False))
+    application.add_handler(CommandHandler("admin", cmd_admin, block=False))
+    application.add_handler(CommandHandler("settings", settings_report, block=False))
+    application.add_handler(CommandHandler("qa", cmd_qa, block=False))
+    application.add_handler(CommandHandler("uploadmemory", cmd_uploadmemory, block=False))
+    application.add_handler(CommandHandler("uploadqa", cmd_uploadqa, block=False))
 
     # group 1: admin-only commands
     application.add_handler(CommandHandler("stats", cmd_stats, block=False))
@@ -828,6 +1009,9 @@ def register_handlers(application: Application, services: Services) -> None:
     application.add_handler(MessageHandler(
         filters.ChatType.PRIVATE & filters.TEXT & ~filters.COMMAND,
         on_private_message, block=False), group=2)
+    application.add_handler(MessageHandler(
+        filters.ChatType.PRIVATE & filters.Document.ALL,
+        on_private_document, block=False), group=2)
 
     # group 3: group/supergroup text
     application.add_handler(MessageHandler(
@@ -858,26 +1042,33 @@ async def _post_init(application: Application) -> None:
     logger.info("startup tasks: %s", summary)
 
     try:
+        group_commands = [BotCommand("ask", "Admin-এর তথ্যের ভিত্তিতে প্রশ্ন")]
         await application.bot.set_my_commands(
-            [BotCommand(name, desc) for name, desc in (
-                ("start", "Bot চালু ও পরিচিতি"),
-                ("ask", "Admin-এর তথ্যের ভিত্তিতে প্রশ্নের উত্তর"),
-                ("help", "সাহায্য"),
-                ("memory", "আমি কী মনে রেখেছি"),
-                ("status", "Bot status"),
-                ("whoami", "তোমার Telegram id"),
-                ("ping", "Bot alive কিনা পরীক্ষা"),
-            )],
-            scope=BotCommandScopeAllPrivateChats(),
-        )
-        await application.bot.set_my_commands(
-            [BotCommand("start", "Bot চালু ও পরিচিতি"),
-             BotCommand("ask", "প্রশ্ন করো: /ask BTC কেমন?"),
-             BotCommand("memory", "memory সারসংক্ষেপ"),
-             BotCommand("help", "সাহায্য"),
-             BotCommand("ping", "Bot alive কিনা পরীক্ষা")],
-            scope=BotCommandScopeAllGroupChats(),
-        )
+            group_commands, scope=BotCommandScopeAllGroupChats())
+        if services.settings.group_id is not None:
+            await application.bot.set_my_commands(
+                group_commands,
+                scope=BotCommandScopeChat(chat_id=services.settings.group_id),
+            )
+        admin_commands = [
+            BotCommand("admin", "Admin command menu"),
+            BotCommand("status", "System status"),
+            BotCommand("settings", "Safe settings diagnostics"),
+            BotCommand("memory", "Admin memory"),
+            BotCommand("qa", "Q&A records"),
+            BotCommand("help", "Help"),
+        ]
+        for admin_id in services.settings.admin_ids:
+            await application.bot.set_my_commands(
+                admin_commands,
+                scope=BotCommandScopeChat(chat_id=admin_id),
+            )
+            if services.settings.group_id is not None:
+                await application.bot.set_my_commands(
+                    admin_commands,
+                    scope=BotCommandScopeChatMember(
+                        chat_id=services.settings.group_id, user_id=admin_id),
+                )
     except TelegramError as exc:
         logger.debug("set_my_commands failed: %s", exc)
 
@@ -915,7 +1106,9 @@ def build_application(settings: Settings | None = None,
                       *, for_webhook: bool = False) -> tuple[Application, Services]:
     """Create the PTB ``Application`` with every handler registered."""
     settings = settings or get_settings()
+    logger.info("application build: services=%s", "provided" if services is not None else "create")
     services = services or build_services(settings)
+    logger.info("application build: services ready")
 
     builder = (
         ApplicationBuilder()
@@ -930,8 +1123,11 @@ def build_application(settings: Settings | None = None,
     )
     if for_webhook:
         builder = builder.updater(None)  # webhook mode: we drive updates ourselves
+    logger.info("application build: ptb builder configured (webhook=%s)", for_webhook)
     application = builder.build()
+    logger.info("application build: ptb application built")
     register_handlers(application, services)
+    logger.info("application build: handlers registered")
     return application, services
 
 

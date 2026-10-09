@@ -49,6 +49,7 @@ class Permissions:
         self.settings = settings
         self._group_admins: dict[int, set[int]] = {}
         self._group_admin_fetched: dict[int, float] = {}
+        self._membership_cache: dict[tuple[int, int], tuple[bool, float]] = {}
 
     # ------------------------------------------------------------------ #
     # identity helpers
@@ -81,10 +82,30 @@ class Permissions:
         return self.settings.is_target_admin(user_id)
 
     def in_target_group(self, chat_id: int | None) -> bool:
-        """``GROUP_ID`` unset means 'accept any group the bot is added to'."""
-        if self.settings.group_id is None:
-            return True
-        return chat_id == self.settings.group_id
+        """Return true only for the explicitly configured group."""
+        return self.settings.group_id is not None and chat_id == self.settings.group_id
+
+    async def is_authorized_member(self, bot: Any, chat_id: int | None,
+                                   user_id: int | None, *, force: bool = False) -> bool:
+        """Verify that a user currently belongs to the configured group."""
+        if not self.in_target_group(chat_id) or user_id is None:
+            return False
+        key = (int(chat_id), int(user_id))
+        cached = self._membership_cache.get(key)
+        if not force and cached and time.time() - cached[1] < 60.0:
+            return cached[0]
+        allowed = False
+        try:
+            member = await bot.get_chat_member(int(chat_id), int(user_id))
+            status = str(getattr(member, "status", ""))
+            allowed = status in {"creator", "administrator", "member"}
+            if status == "restricted":
+                allowed = bool(getattr(member, "is_member", False))
+        except Exception as exc:
+            logger.warning("group membership check failed for user=%s chat=%s: %s",
+                           user_id, chat_id, str(exc)[:160])
+        self._membership_cache[key] = (allowed, time.time())
+        return allowed
 
     def is_group_admin(self, user_id: int | None, chat_id: int | None) -> bool:
         if user_id is None or chat_id is None:
