@@ -194,6 +194,8 @@ class ApplicationManager:
         asyncio.set_event_loop(loop)
         self._loop = loop
         try:
+            self._step = "build_application"
+            logger.info("telegram start: build_application()")
             application, _services = build_application(
                 self.settings, for_webhook=(self.mode == "webhook")
             )
