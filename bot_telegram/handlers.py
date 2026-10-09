@@ -920,6 +920,10 @@ def build_application(settings: Settings | None = None,
     builder = (
         ApplicationBuilder()
         .token(settings.bot_token)
+        .connect_timeout(10.0)
+        .read_timeout(10.0)
+        .write_timeout(10.0)
+        .pool_timeout(10.0)
         .post_init(_post_init)
         .post_shutdown(_post_shutdown)
         .concurrent_updates(False)
