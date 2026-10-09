@@ -105,7 +105,11 @@ def build_services(settings: Settings | None = None, *, force: bool = False) -> 
         settings = settings or get_settings()
         register_secrets(settings.secret_map().values())
         database.configure(settings)
-        db_available = database.init(apply_schema_if_missing=settings.db_auto_migrate)
+        # Do not probe PostgreSQL while constructing the Telegram application.
+        # A slow or temporarily blocked Supabase connection must not leave the
+        # webhook manager in ``starting`` forever.  startup_tasks() retries the
+        # same initialization after the Telegram application is serving updates.
+        db_available = False
 
         permissions = Permissions(settings)
         groq = GroqClient(settings)
