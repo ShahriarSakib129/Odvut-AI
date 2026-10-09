@@ -133,6 +133,8 @@ class ApplicationManager:
             "start_attempts": self._attempts,
             "retry_in_seconds": self.retry_in_seconds,
             "bot_username": self.bot_username,
+            "startup_step": getattr(self, "_step", "idle"),
+            "thread_alive": bool(self._thread and self._thread.is_alive()),
         }
 
     # ------------------------------------------------------------------ #
@@ -218,8 +220,11 @@ class ApplicationManager:
                     )
                 )
                 logger.info("long polling started")
-            self._started = True
-            self._started_at = time.time()
+            with self._lock:
+                self._started = True
+                self._starting = False
+                self._started_at = time.time()
+            logger.info("Telegram readiness committed: started=true starting=false")
             logger.info("Telegram application started (mode=%s, bot=@%s)",
                         self.mode, self.bot_username)
             if self.mode == "webhook":
